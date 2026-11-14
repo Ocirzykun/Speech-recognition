@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VoiceNotes - Speech Recognition</title>
+<style>
+  :root { --bg:#f5f6fa; --card:#fff; --text:#1f2430; --muted:#6b7280; --accent:#4f46e5; --danger:#dc2626; --border:#e5e7eb; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#12141a; --card:#1c1f28; --text:#e8eaf0; --muted:#9aa1b0; --accent:#818cf8; --danger:#f87171; --border:#2b3040; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, sans-serif; background:var(--bg); color:var(--text); }
+  main { max-width: 760px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 20px; }
+  .card { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:16px; margin-bottom:16px; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  button, select { font:inherit; padding:8px 14px; border-radius:8px; border:1px solid var(--border); background:var(--card); color:var(--text); cursor:pointer; }
+  button.primary { background:var(--accent); color:#fff; border-color:var(--accent); }
+  button.danger { color:var(--danger); }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  #mic.listening { background:var(--danger); border-color:var(--danger); animation:pulse 1.2s infinite; }
+  @keyframes pulse { 50% { opacity:.6; } }
+  textarea { width:100%; min-height:110px; margin-top:12px; padding:10px; border-radius:8px; border:1px solid var(--border); background:var(--bg); color:var(--text); font:inherit; resize:vertical; }
+  #status { color:var(--muted); font-size:.9rem; margin-top:8px; }
+  .item { border-top:1px solid var(--border); padding:12px 0; }
+  .item:first-child { border-top:none; }
+  .meta { color:var(--muted); font-size:.8rem; margin-bottom:4px; }
+  .item p { margin:0 0 8px; }
+  .empty { color:var(--muted); text-align:center; padding:12px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>VoiceNotes</h1>
+  <p class="sub">Speak, see your words, save them, and have them read back.</p>
+
+  <section class="card">
+    <div class="row">
+      <button id="mic" class="primary">Start listening</button>
+      <select id="lang">
+        <option value="en-US">English (US)</option>
+        <option value="en-PH">English (Philippines)</option>
+        <option value="fil-PH">Filipino</option>
+        <option value="es-ES">Spanish</option>
+        <option value="ja-JP">Japanese</option>
+      </select>
+      <button id="speak">Read aloud</button>
+      <button id="save">Save note</button>
+      <button id="clear">Clear</button>
+    </div>
+    <textarea id="text" placeholder="Your transcript appears here. You can also edit it."></textarea>
+    <div id="status">Ready.</div>
+  </section>
+
+  <section class="card">
+    <div class="row" style="justify-content:space-between">
+      <strong>Saved notes</strong>
+      <a href="/api/export"><button>Export .txt</button></a>
+    </div>
+    <div id="list"></div>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const mic = $("mic"), text = $("text"), status = $("status"), lang = $("lang");
+
+// ---------- Speech recognition (browser Web Speech API) ----------
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+let recognition = null, listening = false, finalText = "";
+
+if (!SR) {
+  mic.disabled = true;
+  status.textContent = "Speech recognition is not supported in this browser. Use Chrome or Edge.";
+} else {
+  recognition = new SR();
+  recognition.continuous = true;
+  recognition.interimResults = true;
+
+  recognition.onstart = () => {
+    listening = true;
+    mic.textContent = "Stop listening";
+    mic.classList.add("listening");
+    status.textContent = "Listening...";
+  };
+  recognition.onend = () => {
+    listening = false;
+    mic.textContent = "Start listening";
+    mic.classList.remove("listening");
+    status.textContent = "Stopped.";
+  };
+  recognition.onerror = (e) => { status.textContent = "Error: " + e.error; };
+  recognition.onresult = (event) => {
+    let interim = "";
+    for (let i = event.resultIndex; i < event.results.length; i++) {
+      const t = event.results[i][0].transcript;
+      if (event.results[i].isFinal) finalText += t + " ";
+      else interim += t;
+    }
+    text.value = finalText + interim;
+  };
+}
+
+mic.onclick = () => {
+  if (!recognition) return;
+  if (listening) { recognition.stop(); return; }
+  finalText = text.value ? text.value.trim() + " " : "";
+  recognition.lang = lang.value;
+  recognition.start();
+};
+
+// ---------- Text to speech ----------
+$("speak").onclick = () => {
+  const t = text.value.trim();
+  if (!t) return;
+  speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(t);
+  u.lang = lang.value;
+  speechSynthesis.speak(u);
+};
+
+$("clear").onclick = () => { text.value = ""; finalText = ""; };
+
+// ---------- Backend calls ----------
+async function loadNotes() {
+  const res = await fetch("/api/transcripts");
+  const notes = await res.json();
+  const list = $("list");
+  list.innerHTML = "";
+  if (!notes.length) {
+    list.innerHTML = '<div class="empty">No saved notes yet.</div>';
+    return;
+  }
+  for (const n of notes) {
+    const div = document.createElement("div");
+    div.className = "item";
+    const meta = document.createElement("div");
+    meta.className = "meta";
+    meta.textContent = n.created_at + " · " + n.language;
+    const p = document.createElement("p");
+    p.textContent = n.text;
+    const row = document.createElement("div");
+    row.className = "row";
+    const say = document.createElement("button");
+    say.textContent = "Play";
+    say.onclick = () => {
+      speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(n.text);
+      u.lang = n.language;
+      speechSynthesis.speak(u);
+    };
+    const del = document.createElement("button");
+    del.textContent = "Delete";
+    del.className = "danger";
+    del.onclick = async () => {
+      await fetch("/api/transcripts/" + n.id, { method: "DELETE" });
+      loadNotes();
+    };
+    row.append(say, del);
+    div.append(meta, p, row);
+    list.append(div);
+  }
+}
+
+$("save").onclick = async () => {
+  const t = text.value.trim();
+  if (!t) { status.textContent = "Nothing to save."; return; }
+  const res = await fetch("/api/transcripts", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text: t, language: lang.value }),
+  });
+  if (res.ok) {
+    status.textContent = "Saved.";
+    text.value = ""; finalText = "";
+    loadNotes();
+  } else {
+    status.textContent = "Could not save.";
+  }
+};
+
+loadNotes();
+</script>
+</body>
+</html>
